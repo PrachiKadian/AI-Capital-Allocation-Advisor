@@ -58,7 +58,7 @@ MUTUAL_FUNDS = [k for k in ASSET_NAMES.keys() if '.BO' in k]
 @st.cache_data(ttl=3600)
 def fetch_data(tickers, period="2y"):
     """Robust data fetcher for multiple tickers."""
-    if not tickers: return pd.DataFrame()
+    if not tickers: return pd.DataFrame(), pd.DataFrame()
     try:
         # Fetch OHLC data for stocks to support Candlestick charts
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, progress=False)
@@ -68,8 +68,10 @@ def fetch_data(tickers, period="2y"):
         for t in tickers:
             try:
                 if len(tickers) == 1:
+                    # Single ticker structure from yfinance
                     prices[t] = data['Close'] if 'Close' in data.columns else data
                 else:
+                    # Multi-ticker structure
                     if t in data.columns.levels[0]:
                         prices[t] = data[t]['Close']
             except: pass
@@ -296,10 +298,10 @@ def main():
                 fig.update_layout(title=f"{stock_pick} - Technicals + AI Trend", xaxis_rangeslider_visible=False, height=500)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.info("ℹ️ **Chart Guide:** The **Candlesticks** 
-
-[Image of Candlestick chart technical analysis]
- show daily price action. The **Orange/Blue lines** are Moving Averages (50/200 days). The **Green Dotted Line** is the AI Linear Regression trend projecting 30 days ahead.")
+                # FIXED: Triple quotes used to ensure the string doesn't break
+                st.info("""ℹ️ **Chart Guide:** The **Candlesticks** show daily price action. 
+                The **Orange/Blue lines** are Moving Averages (50/200 days). 
+                The **Green Dotted Line** is the AI Linear Regression trend projecting 30 days ahead.""")
 
     # --- TAB 3: MUTUAL FUNDS ---
     with tabs[2]:
