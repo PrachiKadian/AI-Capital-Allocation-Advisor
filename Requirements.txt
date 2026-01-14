@@ -3,7 +3,5 @@ yfinance
 pandas
 numpy
 plotly
-pyportfolioopt
+scikit-learn
 scipy
-matplotlib
-cvxpy>=1.1.18
