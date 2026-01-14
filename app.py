@@ -7,10 +7,14 @@ import plotly.express as px
 from scipy.optimize import minimize
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
+import warnings
 
 # ==========================================
-# 1. SYSTEM CONFIGURATION
+# 0. CONFIGURATION & SUPPRESSION
 # ==========================================
+# Suppress warnings for clean UI (Pandas/Streamlit deprecations)
+warnings.filterwarnings('ignore')
+
 st.set_page_config(
     page_title="AI Capital Allocation Advisor",
     layout="wide",
@@ -22,6 +26,7 @@ st.set_page_config(
 RISK_FREE_RATE = 0.070  # Approx India 10Y Bond Yield
 
 # Asset Dictionary: Maps Tickers to Real Names
+# REMOVED TATAMOTORS.NS to fix 404 Error
 ASSET_NAMES = {
     # Stocks (NSE)
     'RELIANCE.NS': 'Reliance Industries',
@@ -36,7 +41,6 @@ ASSET_NAMES = {
     'HINDUNILVR.NS': 'HUL',
     'AXISBANK.NS': 'Axis Bank',
     'MARUTI.NS': 'Maruti Suzuki',
-    'TATAMOTORS.NS': 'Tata Motors',
     'SUNPHARMA.NS': 'Sun Pharma',
     'BAJFINANCE.NS': 'Bajaj Finance',
     
@@ -60,23 +64,25 @@ def fetch_data(tickers, period="2y"):
     """Robust data fetcher for multiple tickers."""
     if not tickers: return pd.DataFrame(), pd.DataFrame()
     try:
-        # Fetch OHLC data for stocks to support Candlestick charts
+        # Fetch OHLC data for stocks
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, progress=False)
         prices = pd.DataFrame()
         
-        # Helper to extract Close prices for general calculation
+        # Helper to extract Close prices
         for t in tickers:
             try:
                 if len(tickers) == 1:
-                    # Single ticker structure from yfinance
+                    # Single ticker structure
                     prices[t] = data['Close'] if 'Close' in data.columns else data
                 else:
                     # Multi-ticker structure
                     if t in data.columns.levels[0]:
                         prices[t] = data[t]['Close']
             except: pass
+        
+        # Drop rows where all cols are NaN
         prices.dropna(how='all', inplace=True)
-        return prices, data # Return both simple close prices and full OHLC data
+        return prices, data 
     except: return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=600)
@@ -90,12 +96,14 @@ def get_market_movers():
     
     changes = ((latest - prev) / prev) * 100
     ranking = changes.sort_values(ascending=False)
-    volatility = prices.pct_change().std() * np.sqrt(252) * 100
+    
+    # Fix FutureWarning: fill_method=None
+    volatility = prices.pct_change(fill_method=None).std() * np.sqrt(252) * 100
     
     return ranking, volatility
 
 def get_stock_fundamentals(ticker):
-    """Fetch live fundamentals (P/E, Market Cap, etc)."""
+    """Fetch live fundamentals."""
     try:
         t = yf.Ticker(ticker)
         info = t.info
@@ -114,7 +122,8 @@ def get_stock_fundamentals(ticker):
 # ==========================================
 def calculate_metrics(series):
     if series.empty: return 0,0,0,0
-    returns = series.pct_change().dropna()
+    # Fix FutureWarning: fill_method=None
+    returns = series.pct_change(fill_method=None).dropna()
     ann_vol = returns.std() * np.sqrt(252)
     total_ret = (series.iloc[-1] / series.iloc[0]) - 1
     sharpe = (total_ret - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0
@@ -130,7 +139,8 @@ def run_optimization(tickers, risk_profile):
     prices, _ = fetch_data(tickers, period="1y")
     if prices.empty: return [], []
     
-    returns = prices.pct_change().dropna()
+    # Fix FutureWarning: fill_method=None
+    returns = prices.pct_change(fill_method=None).dropna()
     mu = returns.mean() * 252
     sigma = returns.cov() * 252
     n = len(tickers)
@@ -215,17 +225,16 @@ def main():
                     name = ASSET_NAMES.get(t, t).split('.')[0]
                     st.write(f"**{name}**: {v:.1f}% Vol")
 
-    # --- TAB 2: STOCKS (IMPROVED) ---
+    # --- TAB 2: STOCKS ---
     with tabs[1]:
         st.subheader("Deep Dive: Equity Analysis")
         stock_pick = st.selectbox("Select Stock to Analyze", STOCKS, format_func=lambda x: ASSET_NAMES[x])
         
         if stock_pick:
-            # Fetch full OHLC data
             prices_df, full_data = fetch_data([stock_pick], period="2y")
             
             if not prices_df.empty:
-                # 1. Fundamentals Header
+                # 1. Fundamentals
                 with st.spinner("Fetching fundamentals..."):
                     fund_info = get_stock_fundamentals(stock_pick)
                     
@@ -248,49 +257,38 @@ def main():
                 m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
                 m4.metric("Max Drawdown", f"{dd*100:.1f}%")
                 
-                # 3. Advanced Candlestick Chart with AI Forecast
+                # 3. Chart & AI
                 st.subheader("Technical & AI Price Forecast")
                 
-                # Prepare Data
-                # Handle YF MultiIndex if necessary
                 if isinstance(full_data.columns, pd.MultiIndex):
                     ohlc = full_data[stock_pick]
                 else:
                     ohlc = full_data
                 
                 ohlc = ohlc.reset_index()
-                
-                # Calculate Moving Averages
                 ohlc['SMA_50'] = ohlc['Close'].rolling(window=50).mean()
                 ohlc['SMA_200'] = ohlc['Close'].rolling(window=200).mean()
                 
-                # AI Linear Regression for Trend Line
+                # AI Linear Regression
                 ohlc['ID'] = np.arange(len(ohlc))
                 clean_df = ohlc.dropna(subset=['Close'])
                 X = clean_df[['ID']]
                 y = clean_df['Close']
                 model = LinearRegression().fit(X, y)
                 
-                # Project 30 days future
                 last_id = ohlc['ID'].iloc[-1]
                 future_ids = np.arange(last_id, last_id + 30).reshape(-1, 1)
                 future_prices = model.predict(future_ids)
                 future_dates = [ohlc['Date'].iloc[-1] + timedelta(days=i) for i in range(1, 31)]
                 
-                # Build Plotly Chart
                 fig = go.Figure()
-                
-                # Candlesticks
                 fig.add_trace(go.Candlestick(
                     x=ohlc['Date'], open=ohlc['Open'], high=ohlc['High'],
                     low=ohlc['Low'], close=ohlc['Close'], name='Price'
                 ))
-                
-                # SMAs
                 fig.add_trace(go.Scatter(x=ohlc['Date'], y=ohlc['SMA_50'], line=dict(color='orange', width=1.5), name='SMA 50'))
                 fig.add_trace(go.Scatter(x=ohlc['Date'], y=ohlc['SMA_200'], line=dict(color='blue', width=1.5), name='SMA 200'))
                 
-                # AI Trend Line (Historical + Future)
                 trend_hist = model.predict(X)
                 fig.add_trace(go.Scatter(x=clean_df['Date'], y=trend_hist, line=dict(color='green', dash='dot'), name='AI Trend (Hist)'))
                 fig.add_trace(go.Scatter(x=future_dates, y=future_prices, line=dict(color='green', width=2), name='AI Forecast (30D)'))
@@ -298,7 +296,6 @@ def main():
                 fig.update_layout(title=f"{stock_pick} - Technicals + AI Trend", xaxis_rangeslider_visible=False, height=500)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # FIXED: Triple quotes used to ensure the string doesn't break
                 st.info("""ℹ️ **Chart Guide:** The **Candlesticks** show daily price action. 
                 The **Orange/Blue lines** are Moving Averages (50/200 days). 
                 The **Green Dotted Line** is the AI Linear Regression trend projecting 30 days ahead.""")
