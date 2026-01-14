@@ -1,0 +1,18 @@
+# Web Framework
+streamlit
+
+# Financial Data & Analysis
+yfinance
+pandas
+numpy
+
+# Portfolio Optimization (Core Engine)
+PyPortfolioOpt
+
+# Machine Learning & Statistics
+scikit-learn
+scipy
+
+# Visualization
+plotly
+matplotlib
