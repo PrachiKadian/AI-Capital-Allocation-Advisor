@@ -3,5 +3,5 @@ yfinance
 pandas
 numpy
 plotly
-scikit-learn
-scipy
+scipy 
+scikit-learn ta streamlit-authenticator
