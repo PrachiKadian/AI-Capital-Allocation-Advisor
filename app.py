@@ -13,21 +13,19 @@ import warnings
 import json
 import os
 import hashlib
-import time
 
 # ==========================================
-# 0. CONFIGURATION & AUTHENTICATION
+# 0. SYSTEM CONFIGURATION
 # ==========================================
 warnings.filterwarnings('ignore')
 
 st.set_page_config(
-    page_title=" AI Capital & Trade Advisor",
+    page_title="Strategic Capital Allocation System",
     layout="wide",
-    page_icon="🤖",
     initial_sidebar_state="expanded"
 )
 
-# --- Auth System ---
+# --- Authentication System ---
 USER_DB_FILE = "users_db.json"
 
 def load_users():
@@ -40,41 +38,47 @@ def save_users(users):
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def login_page():
-    st.title("🔐 Login to Friday AI")
-    t1, t2 = st.tabs(["Login", "Sign Up"])
-    with t1:
-        u = st.text_input("Username", key="l_u")
-        p = st.text_input("Password", type="password", key="l_p")
-        if st.button("Login"):
+def auth_screen():
+    st.header("System Access")
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        u = st.text_input("Username", key="login_user")
+        p = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Access Dashboard"):
             db = load_users()
             if u in db and db[u] == hash_password(p):
-                st.session_state["auth"] = True
-                st.session_state["user"] = u
+                st.session_state["authenticated"] = True
+                st.session_state["username"] = u
                 st.rerun()
-            else: st.error("Invalid credentials")
-    with t2:
-        nu = st.text_input("New Username", key="s_u")
-        np_pass = st.text_input("New Password", type="password", key="s_p")
+            else:
+                st.error("Authentication Failed: Invalid credentials.")
+    
+    with tab2:
+        nu = st.text_input("New Username", key="reg_user")
+        np_pass = st.text_input("New Password", type="password", key="reg_pass")
         if st.button("Create Account"):
             db = load_users()
-            if nu in db: st.error("User exists")
+            if nu in db:
+                st.error("Error: User already exists.")
             else:
                 db[nu] = hash_password(np_pass)
                 save_users(db)
-                st.success("Account created! Log in now.")
+                st.success("Account created successfully. Please login.")
 
-if "auth" not in st.session_state: st.session_state["auth"] = False
-if not st.session_state["auth"]:
-    login_page()
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    auth_screen()
     st.stop()
 
 # ==========================================
-# 1. CONSTANTS & ASSETS
+# 1. ASSET CONFIGURATION
 # ==========================================
 RISK_FREE_RATE = 0.070 
 
-ASSET_NAMES = {
+ASSET_MAP = {
     # Stocks
     'RELIANCE.NS': 'Reliance Industries', 'TCS.NS': 'TCS', 'HDFCBANK.NS': 'HDFC Bank',
     'INFY.NS': 'Infosys', 'ICICIBANK.NS': 'ICICI Bank', 'ITC.NS': 'ITC Ltd',
@@ -83,62 +87,91 @@ ASSET_NAMES = {
     'SUNPHARMA.NS': 'Sun Pharma', 'BAJFINANCE.NS': 'Bajaj Finance', 'TATAMOTORS.NS': 'Tata Motors',
     
     # Mutual Funds
-    '0P0000XVAA.BO': 'HDFC Top 100 Fund', '0P0000XW8F.BO': 'SBI Bluechip Fund',
-    '0P0000XVK5.BO': 'Axis Bluechip Fund', '0P0000XVTR.BO': 'ICICI Pru Value Discovery',
-    '0P00005WLZ.BO': 'Nippon India Small Cap', '0P00009J3J.BO': 'Mirae Asset Large Cap'
+    '0P0000XVAA.BO': 'HDFC Top 100', '0P0000XW8F.BO': 'SBI Bluechip',
+    '0P0000XVK5.BO': 'Axis Bluechip', '0P0000XVTR.BO': 'ICICI Pru Value',
+    '0P00005WLZ.BO': 'Nippon Small Cap', '0P00009J3J.BO': 'Mirae Large Cap'
 }
 
-STOCKS = [k for k in ASSET_NAMES.keys() if '.NS' in k]
-MUTUAL_FUNDS = [k for k in ASSET_NAMES.keys() if '.BO' in k]
+STOCKS = [k for k in ASSET_MAP.keys() if '.NS' in k]
+FUNDS = [k for k in ASSET_MAP.keys() if '.BO' in k]
 
 # ==========================================
-# 2. DATA ENGINE
+# 2. DATA ENGINE (ROBUST)
 # ==========================================
+def fetch_index_data(ticker):
+    """
+    Dedicated function for Indices (Nifty/Sensex) which often fail on standard calls.
+    Fetches 5 days of history to ensure we find the Last Traded Price (LTP).
+    """
+    try:
+        idx = yf.Ticker(ticker)
+        # Fetch 5 days to cover weekends/holidays
+        hist = idx.history(period="5d")
+        if hist.empty:
+            return 0.0, 0.0
+        
+        curr = hist['Close'].iloc[-1]
+        prev = hist['Close'].iloc[-2] if len(hist) > 1 else curr
+        change_pct = ((curr - prev) / prev) * 100
+        return curr, change_pct
+    except:
+        return 0.0, 0.0
+
 @st.cache_data(ttl=60)
 def fetch_live_price(ticker):
+    """Fetches latest available price for stocks."""
     try:
         data = yf.download(ticker, period="1d", interval="1m", progress=False)
         if not data.empty:
-            return data['Close'].iloc[-1].item() if hasattr(data['Close'].iloc[-1], 'item') else data['Close'].iloc[-1]
+            price = data['Close'].iloc[-1]
+            # Handle single value extraction safely
+            return float(price.item()) if hasattr(price, 'item') else float(price)
+        # Fallback to daily data if intraday fails
+        data_d = yf.download(ticker, period="1d", progress=False)
+        return float(data_d['Close'].iloc[-1])
+    except:
         return 0.0
-    except: return 0.0
 
 @st.cache_data(ttl=3600)
-def fetch_bulk_data(tickers, period="2y"):
-    """Optimized for Portfolio Engine"""
+def fetch_historical_matrix(tickers, period="2y"):
+    """Fetches clean Close price matrix for optimization."""
     if not tickers: return pd.DataFrame()
     try:
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, progress=False)
         prices = pd.DataFrame()
         for t in tickers:
             try:
+                # Handle MultiIndex logic
                 if len(tickers) == 1:
-                    col = data['Close'] if 'Close' in data.columns else data
+                    series = data['Close'] if 'Close' in data.columns else data
                 else:
-                    col = data[t]['Close'] if t in data.columns.levels[0] else None
-                if col is not None: prices[t] = col
+                    series = data[t]['Close'] if t in data.columns.levels[0] else None
+                
+                if series is not None:
+                    prices[t] = series
             except: pass
-        prices.dropna(how='all', inplace=True)
+        
+        # Forward fill to handle holidays, then drop remaining NaNs
+        prices.ffill(inplace=True)
+        prices.dropna(how='any', inplace=True)
         return prices
     except: return pd.DataFrame()
 
 @st.cache_data(ttl=300)
-def fetch_single_stock_data(ticker, period="1y"):
-    """Optimized for Technical Analysis"""
+def fetch_analysis_data(ticker):
+    """Deep fetch for technical analysis."""
     try:
-        data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+        data = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
+        # Flatten MultiIndex if present
         if isinstance(data.columns, pd.MultiIndex):
+             # Try to get level 0 if it matches ticker, else just drop levels
             try: data = data.xs(ticker, axis=1, level=0)
             except: data.columns = data.columns.get_level_values(0)
         return data
     except: return pd.DataFrame()
 
-def get_market_status():
-    hour = datetime.now().hour
-    return "🟢 Market Open" if 9 <= hour < 16 else "🔴 Market Closed"
-
 # ==========================================
-# 3. ANALYTICS ENGINE
+# 3. ANALYTICS CORE
 # ==========================================
 def calculate_metrics(series):
     if series.empty: return 0,0,0,0
@@ -146,205 +179,214 @@ def calculate_metrics(series):
     ann_vol = returns.std() * np.sqrt(252)
     total_ret = (series.iloc[-1] / series.iloc[0]) - 1
     sharpe = (total_ret - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0
-    cum = (1 + returns).cumprod()
-    max_dd = ((cum - cum.cummax()) / cum.cummax()).min()
-    return total_ret, ann_vol, sharpe, max_dd
+    return total_ret, ann_vol, sharpe, 0
 
-def run_optimization(tickers, risk_profile):
-    prices = fetch_bulk_data(tickers, period="1y")
-    if prices.empty or len(prices.columns) < 2: return [], []
+def optimize_portfolio(tickers, risk_level):
+    df = fetch_historical_matrix(tickers, "1y")
+    if df.empty or len(df.columns) < 2: return [], []
     
-    returns = prices.pct_change().dropna()
-    mu, sigma = returns.mean() * 252, returns.cov() * 252
-    n = len(prices.columns)
+    returns = df.pct_change().dropna()
+    mu = returns.mean() * 252
+    sigma = returns.cov() * 252
+    n_assets = len(df.columns)
     
-    bounds = ((0.0, 0.20),) * n if risk_profile == "Conservative" else \
-             ((0.0, 0.50),) * n if risk_profile == "Aggressive" else ((0.05, 0.35),) * n
-    
+    # Allocations Constraints
+    if risk_level == "Conservative":
+        bounds = tuple((0.0, 0.15) for _ in range(n_assets))
+    elif risk_level == "Aggressive":
+        bounds = tuple((0.0, 0.40) for _ in range(n_assets))
+    else: # Moderate
+        bounds = tuple((0.0, 0.25) for _ in range(n_assets))
+        
     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-    def neg_sharpe(w):
-        return -((np.sum(w * mu) - RISK_FREE_RATE) / np.sqrt(np.dot(w.T, np.dot(sigma, w))))
+    
+    def neg_sharpe_ratio(weights):
+        p_ret = np.sum(weights * mu)
+        p_vol = np.sqrt(np.dot(weights.T, np.dot(sigma, weights)))
+        return -((p_ret - RISK_FREE_RATE) / p_vol)
     
     try:
-        res = minimize(neg_sharpe, [1./n]*n, bounds=bounds, constraints=constraints, method='SLSQP')
-        return res.x, prices.columns
+        init_guess = [1./n_assets for _ in range(n_assets)]
+        result = minimize(neg_sharpe_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+        return result.x, df.columns
     except: return [], []
 
 # ==========================================
-# 4. UI & DASHBOARD
+# 4. DASHBOARD UI
 # ==========================================
 def main():
     # --- Sidebar ---
-    st.sidebar.title(f"👤 {st.session_state['user']}")
+    st.sidebar.header("Parameters")
+    st.sidebar.markdown(f"User: **{st.session_state['username']}**")
+    
+    capital = st.sidebar.number_input("Capital Allocation (₹)", 50000, 100000000, 500000, step=100000)
+    risk_profile = st.sidebar.selectbox("Risk Profile", ["Conservative", "Moderate", "Aggressive"], index=1)
+    
     if st.sidebar.button("Logout"):
-        st.session_state["auth"] = False
+        st.session_state["authenticated"] = False
         st.rerun()
-    st.sidebar.divider()
+
+    # --- Main Layout ---
+    st.title("Strategic Capital Allocation System")
+    st.markdown("---")
+
+    tabs = st.tabs(["Market Overview", "Stock Analysis", "Mutual Funds", "Portfolio Optimizer", "Report Generation"])
     
-    st.sidebar.header("💰 Portfolio Settings")
-    capital = st.sidebar.number_input("Capital (₹)", 50000, 10000000, 500000, step=50000)
-    risk = st.sidebar.select_slider("Risk Profile", ["Conservative", "Moderate", "Aggressive"], value="Moderate")
-    
-    st.title("Friday: AI Financial Core")
-    st.markdown(f"**Status:** {get_market_status()} | **Capital:** ₹{capital:,.0f} | **Risk:** {risk}")
-    
-    tabs = st.tabs(["📊 Dashboard", "📉 Pro Stock Analysis", "🏢 Mutual Funds", "🤖 AI Allocator", "📝 Report"])
-    
-    # --- TAB 1: DASHBOARD ---
+    # --- TAB 1: MARKET OVERVIEW ---
     with tabs[0]:
+        st.subheader("Market Indices")
         c1, c2, c3 = st.columns(3)
-        try:
-            nifty = yf.Ticker("^NSEI").history(period="2d")['Close']
-            n_val, n_chg = nifty.iloc[-1], ((nifty.iloc[-1]-nifty.iloc[-2])/nifty.iloc[-2])*100
-            c1.metric("NIFTY 50", f"₹{n_val:,.0f}", f"{n_chg:.2f}%")
-        except: c1.metric("NIFTY 50", "Error", "0%")
         
-        # Market Movers Logic
-        st.subheader("Market Movers")
-        movers_df = fetch_bulk_data(STOCKS, "5d")
-        if not movers_df.empty:
-            chg = ((movers_df.iloc[-1] - movers_df.iloc[-2]) / movers_df.iloc[-2]) * 100
-            top = chg.sort_values(ascending=False).head(5)
-            bot = chg.sort_values().head(5)
+        # Robust fetch for indices
+        n_val, n_pct = fetch_index_data("^NSEI")
+        b_val, b_pct = fetch_index_data("^NSEBANK")
+        s_val, s_pct = fetch_index_data("^BSESN")
+        
+        c1.metric("NIFTY 50", f"₹{n_val:,.0f}", f"{n_pct:.2f}%")
+        c2.metric("BANK NIFTY", f"₹{b_val:,.0f}", f"{b_pct:.2f}%")
+        c3.metric("SENSEX", f"₹{s_val:,.0f}", f"{s_pct:.2f}%")
+        
+        st.markdown("#### Market Momentum (Top 5 Nifty Stocks)")
+        movers_data = fetch_historical_matrix(STOCKS, "5d")
+        if not movers_data.empty:
+            # Calculate % change from open of 5 days ago to now
+            changes = ((movers_data.iloc[-1] - movers_data.iloc[0]) / movers_data.iloc[0]) * 100
+            top_g = changes.sort_values(ascending=False).head(5)
             
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                st.write("🚀 **Top Gainers**")
-                for t, v in top.items(): st.write(f"{ASSET_NAMES.get(t,t)}: :green[+{v:.2f}%]")
-            with mc2:
-                st.write("🔻 **Top Losers**")
-                for t, v in bot.items(): st.write(f"{ASSET_NAMES.get(t,t)}: :red[{v:.2f}%]")
+            # Simple Table
+            st.table(pd.DataFrame({
+                "Asset": [ASSET_MAP.get(t,t) for t in top_g.index],
+                "Ticker": top_g.index,
+                "5-Day Change (%)": [f"{x:.2f}%" for x in top_g.values]
+            }))
 
-    # --- TAB 2: PRO STOCK ANALYSIS (Merged Feature) ---
+    # --- TAB 2: STOCK ANALYSIS ---
     with tabs[1]:
-        col_sel, col_live = st.columns([2, 1])
-        with col_sel:
-            stock_pick = st.selectbox("Select Stock", STOCKS, format_func=lambda x: ASSET_NAMES[x])
-        with col_live:
-            if st.button("🔄 Refresh Live Price"): st.rerun()
+        col_ctrl, col_disp = st.columns([1, 3])
+        with col_ctrl:
+            selected_stock = st.selectbox("Select Asset", STOCKS, format_func=lambda x: ASSET_MAP[x])
+            if st.button("Refresh Data"): st.cache_data.clear()
             
-        data = fetch_single_stock_data(stock_pick)
-        if not data.empty:
-            # LIVE PRICE HEADER
-            lp = fetch_live_price(stock_pick)
-            prev_close = data['Close'].iloc[-1] # Using last hist close as ref if live fails or is same
-            diff = lp - prev_close
-            st.metric(f"Live Price: {ASSET_NAMES[stock_pick]}", f"₹{lp:,.2f}", f"{(diff/prev_close)*100:.2f}%")
-
-            # TECHNICALS
-            data['SMA_20'] = ta.trend.sma_indicator(data['Close'], window=20)
-            data['SMA_50'] = ta.trend.sma_indicator(data['Close'], window=50)
-            data['RSI'] = ta.momentum.rsi(data['Close'], window=14)
-            bb = ta.volatility.BollingerBands(data['Close'], window=20, window_dev=2)
-            data['BB_H'] = bb.bollinger_hband()
-            data['BB_L'] = bb.bollinger_lband()
-
-            # 1. MAIN CHART (Candles + BB + SMA)
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'],
-                                         low=data['Low'], close=data['Close'], name='Price'))
-            fig.add_trace(go.Scatter(x=data.index, y=data['BB_H'], line=dict(color='gray', width=1, dash='dot'), name='BB Upper'))
-            fig.add_trace(go.Scatter(x=data.index, y=data['BB_L'], line=dict(color='gray', width=1, dash='dot'), name='BB Lower'))
-            fig.add_trace(go.Scatter(x=data.index, y=data['SMA_50'], line=dict(color='orange', width=2), name='SMA 50'))
-            
-            # AI PREDICTION OVERLAY
-            data['ID'] = np.arange(len(data))
-            model = LinearRegression().fit(data[['ID']], data['Close'])
-            fut_id = np.arange(data['ID'].iloc[-1], data['ID'].iloc[-1]+30).reshape(-1,1)
-            fut_dates = [data.index[-1] + timedelta(days=i) for i in range(1,31)]
-            fig.add_trace(go.Scatter(x=fut_dates, y=model.predict(fut_id), line=dict(color='cyan', width=2, dash='dash'), name='AI Forecast (30D)'))
-            
-            fig.update_layout(title="Price Action + AI Trend", height=500, xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 2. SUB-CHARTS (RSI & Patterns)
-            c_tech1, c_tech2 = st.columns(2)
-            with c_tech1:
-                # RSI
-                fig_rsi = go.Figure(go.Scatter(x=data.index, y=data['RSI'], line=dict(color='purple')))
-                fig_rsi.add_hline(y=70, line_color='red', line_dash='dot')
-                fig_rsi.add_hline(y=30, line_color='green', line_dash='dot')
-                fig_rsi.update_layout(title="RSI Momentum", height=300)
-                st.plotly_chart(fig_rsi, use_container_width=True)
-            
-            with c_tech2:
-                # Pattern Recognition
-                order = 5
-                min_idx = argrelextrema(data['Close'].values, np.less, order=order)[0]
-                max_idx = argrelextrema(data['Close'].values, np.greater, order=order)[0]
+        with col_disp:
+            df_stock = fetch_analysis_data(selected_stock)
+            if not df_stock.empty:
+                curr_price = fetch_live_price(selected_stock)
                 
-                fig_pat = go.Figure()
-                fig_pat.add_trace(go.Scatter(x=data.index, y=data['Close'], line=dict(color='gray', width=1)))
-                fig_pat.add_trace(go.Scatter(x=data.index[min_idx], y=data['Close'].iloc[min_idx], mode='markers', marker=dict(color='green', symbol='triangle-up', size=10), name='Support'))
-                fig_pat.add_trace(go.Scatter(x=data.index[max_idx], y=data['Close'].iloc[max_idx], mode='markers', marker=dict(color='red', symbol='triangle-down', size=10), name='Resistance'))
-                fig_pat.update_layout(title="Support & Resistance Detection", height=300)
-                st.plotly_chart(fig_pat, use_container_width=True)
-            
-            # FUNDAMENTALS
-            with st.expander("📊 Fundamental Data"):
-                t = yf.Ticker(stock_pick)
-                info = t.info
-                fc1, fc2, fc3 = st.columns(3)
-                fc1.metric("P/E Ratio", info.get('trailingPE', 'N/A'))
-                fc2.metric("Market Cap", f"₹{info.get('marketCap', 0)/1e7:,.0f} Cr")
-                fc3.metric("ROE", f"{info.get('returnOnEquity', 0)*100:.2f}%")
+                st.metric(ASSET_MAP[selected_stock], f"₹{curr_price:,.2f}")
+                
+                # Tech Indicators
+                df_stock['SMA_50'] = ta.trend.sma_indicator(df_stock['Close'], window=50)
+                df_stock['RSI'] = ta.momentum.rsi(df_stock['Close'], window=14)
+                
+                # Charting
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=df_stock.index,
+                                open=df_stock['Open'], high=df_stock['High'],
+                                low=df_stock['Low'], close=df_stock['Close'],
+                                name="OHLC"))
+                fig.add_trace(go.Scatter(x=df_stock.index, y=df_stock['SMA_50'], 
+                                         line=dict(color='orange', width=1.5), name="SMA 50"))
+                
+                # Linear Regression Projection
+                df_stock['idx'] = np.arange(len(df_stock))
+                clean = df_stock.dropna(subset=['Close'])
+                reg = LinearRegression().fit(clean[['idx']], clean['Close'])
+                
+                # Forecast next 30 days
+                last_idx = clean['idx'].iloc[-1]
+                future_idx = np.arange(last_idx, last_idx + 30).reshape(-1, 1)
+                forecast = reg.predict(future_idx)
+                future_dates = [clean.index[-1] + timedelta(days=i) for i in range(1, 31)]
+                
+                fig.add_trace(go.Scatter(x=future_dates, y=forecast, 
+                                         line=dict(color='blue', dash='dot'), name="Linear Forecast"))
+
+                fig.update_layout(height=500, xaxis_rangeslider_visible=False, 
+                                  margin=dict(l=20, r=20, t=20, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Fundamentals
+                try:
+                    info = yf.Ticker(selected_stock).info
+                    f1, f2, f3, f4 = st.columns(4)
+                    f1.metric("P/E Ratio", f"{info.get('trailingPE', 0):.2f}")
+                    f2.metric("Market Cap", f"₹{info.get('marketCap', 0)/1e9:.1f}B")
+                    f3.metric("52W High", f"₹{info.get('fiftyTwoWeekHigh', 0):,.0f}")
+                    f4.metric("Sector", info.get('sector', 'N/A'))
+                except:
+                    st.warning("Fundamental data unavailable.")
 
     # --- TAB 3: MUTUAL FUNDS ---
     with tabs[2]:
-        mf_data = fetch_bulk_data(MUTUAL_FUNDS, "1y")
-        if not mf_data.empty:
-            norm = mf_data / mf_data.iloc[0] * 100
-            norm.columns = [ASSET_NAMES.get(c,c) for c in norm.columns]
-            st.plotly_chart(px.line(norm, title="Mutual Fund Performance (Rebased to 100)"), use_container_width=True)
-            
-            stats = []
-            for c in mf_data.columns:
-                r, v, s, _ = calculate_metrics(mf_data[c])
-                stats.append({"Fund": ASSET_NAMES[c], "Return": f"{r:.1%}", "Risk": f"{v:.1%}", "Sharpe": f"{s:.2f}"})
-            st.dataframe(pd.DataFrame(stats))
+        mf_df = fetch_historical_matrix(FUNDS, "1y")
+        if not mf_df.empty:
+            st.subheader("Fund Performance (Normalized)")
+            norm_mf = mf_df / mf_df.iloc[0] * 100
+            norm_mf.columns = [ASSET_MAP.get(c,c) for c in norm_mf.columns]
+            st.line_chart(norm_mf)
 
-    # --- TAB 4: AI ALLOCATOR ---
+    # --- TAB 4: OPTIMIZER ---
     with tabs[3]:
-        st.subheader("🤖 Portfolio Optimization Engine")
-        universe = []
-        if st.checkbox("Include Stocks", True): universe += STOCKS[:10] # Limit to 10 for speed
-        if st.checkbox("Include Mutual Funds", True): universe += MUTUAL_FUNDS
+        st.subheader("Mean-Variance Optimization")
         
-        if st.button("Run AI Optimization"):
-            with st.spinner("Analyzing correlation matrices..."):
-                weights, assets = run_optimization(universe, risk)
-                if len(weights) > 0:
-                    alloc_df = pd.DataFrame({"Asset": [ASSET_NAMES.get(a,a) for a in assets], "Weight": weights, "Value": weights * capital})
-                    alloc_df = alloc_df[alloc_df.Weight > 0.01].sort_values("Weight", ascending=False)
+        univ_stock = st.multiselect("Select Stocks", STOCKS, default=STOCKS[:5], format_func=lambda x: ASSET_MAP[x])
+        univ_fund = st.multiselect("Select Funds", FUNDS, default=FUNDS[:2], format_func=lambda x: ASSET_MAP[x])
+        
+        selection = univ_stock + univ_fund
+        
+        if st.button("Execute Optimization"):
+            if not selection:
+                st.error("Please select at least 2 assets.")
+            else:
+                with st.spinner("Calculating covariance matrix..."):
+                    w, assets = optimize_portfolio(selection, risk_profile)
                     
-                    ac1, ac2 = st.columns([1,1])
-                    ac1.plotly_chart(px.pie(alloc_df, values='Weight', names='Asset', title="Optimal Allocation"), use_container_width=True)
-                    ac2.dataframe(alloc_df.style.format({"Weight": "{:.1%}", "Value": "₹{:.0f}"}), use_container_width=True)
-                    
-                    # Store for report
-                    st.session_state['last_alloc'] = alloc_df
+                    if len(w) > 0:
+                        res_df = pd.DataFrame({
+                            "Asset": [ASSET_MAP.get(a,a) for a in assets],
+                            "Allocation %": w,
+                            "Value (₹)": w * capital
+                        })
+                        res_df = res_df[res_df['Allocation %'] > 0.001].sort_values("Allocation %", ascending=False)
+                        
+                        c_pie, c_table = st.columns([1, 1])
+                        
+                        with c_pie:
+                            fig_pie = px.pie(res_df, values='Allocation %', names='Asset', 
+                                             title="Recommended Allocation")
+                            st.plotly_chart(fig_pie, use_container_width=True)
+                        
+                        with c_table:
+                            st.dataframe(res_df.style.format({"Allocation %": "{:.1%}", "Value (₹)": "₹{:,.2f}"}), 
+                                         use_container_width=True)
+                            
+                        st.session_state['report_data'] = res_df
+                    else:
+                        st.error("Optimization failed. Insufficient historical data for selected assets.")
 
     # --- TAB 5: REPORT ---
     with tabs[4]:
-        if 'last_alloc' in st.session_state:
-            df = st.session_state['last_alloc']
-            report = f"""
-            AI INVESTMENT MEMORANDUM
-            ------------------------
-            Date: {datetime.now().strftime('%Y-%m-%d')}
-            Investor: {st.session_state['user']}
-            Profile: {risk} | Capital: ₹{capital:,.0f}
+        st.subheader("Investment Memorandum")
+        if 'report_data' in st.session_state:
+            df_rep = st.session_state['report_data']
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             
-            STRATEGY:
-            Optimized for maximum Sharpe Ratio (Return/Risk).
+            report_text = f"""
+            STRATEGIC CAPITAL ALLOCATION REPORT
+            -----------------------------------
+            Date: {now_str}
+            Profile: {risk_profile}
+            Total Capital: ₹{capital:,.2f}
             
-            ALLOCATION:
-            {df.to_string(index=False)}
+            ALLOCATION STRATEGY:
             """
-            st.text_area("Report Preview", report, height=300)
-            st.download_button("Download PDF/TXT", report, "Friday_Report.txt")
+            for index, row in df_rep.iterrows():
+                report_text += f"\n- {row['Asset']}: {row['Allocation %']*100:.1f}%  (₹{row['Value (₹)']:,.2f})"
+            
+            st.text_area("Report Content", report_text, height=300)
+            st.download_button("Export Report", report_text, file_name=f"Allocation_Report_{datetime.now().date()}.txt")
         else:
-            st.info("Please run the AI Allocator in Tab 4 first.")
+            st.info("No optimization data found. Please run the Optimizer first.")
 
 if __name__ == "__main__":
     main()
